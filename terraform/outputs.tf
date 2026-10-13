@@ -28,3 +28,23 @@ output "log_group_name" {
   description = "Log group no CloudWatch — origem dos logs enviados ao Datadog."
   value       = aws_cloudwatch_log_group.lambda.name
 }
+
+output "api_id" {
+  description = "Id do API Gateway."
+  value       = aws_apigatewayv2_api.main.id
+}
+
+output "api_endpoint" {
+  description = "URL pública do gateway. `POST <endpoint>/auth` é o login por CPF."
+  value       = aws_apigatewayv2_api.main.api_endpoint
+}
+
+output "authorizer_id" {
+  description = "Id do authorizer REQUEST do API Gateway."
+  value       = aws_apigatewayv2_authorizer.jwt.id
+}
+
+output "authorizer_function_name" {
+  description = "Nome da função authorizer. Usado no `aws lambda update-function-code` do deploy."
+  value       = aws_lambda_function.authorizer.function_name
+}

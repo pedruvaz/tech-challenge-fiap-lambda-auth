@@ -7,7 +7,14 @@ segredo e o security group do `infra-db`.
 
 ## Propósito
 
-Expõe `POST /auth`. Recebe um CPF, e:
+Provisiona o **API Gateway** do sistema e a autenticação na frente dele.
+Duas funções, um bundle cada:
+
+- **`auth`** (`src/handler.ts`) — `POST /auth`: recebe um CPF e emite o JWT.
+- **`authorizer`** (`src/authorizer.ts`) — valida o JWT de toda rota protegida
+  antes de a requisição chegar à API.
+
+A função `auth`, dado um CPF:
 
 1. **Valida o CPF** pelos dois dígitos verificadores, antes de qualquer
    consulta ao banco.
@@ -19,11 +26,20 @@ Expõe `POST /auth`. Recebe um CPF, e:
 ## Tecnologias
 
 Node.js 20 · TypeScript · `jsonwebtoken` · `pg` · AWS SDK v3 ·
-esbuild (bundle) · Jest · Terraform · GitHub Actions com OIDC.
+esbuild (bundle) · Jest · Terraform · API Gateway HTTP API · GitHub Actions
+com OIDC.
 
 ## Contrato da API
 
 ### `POST /auth`
+
+Pelo endpoint do gateway (output `api_endpoint` do Terraform):
+
+```bash
+curl -X POST "$API_ENDPOINT/auth" \
+  -H 'content-type: application/json' \
+  -d '{ "cpf": "529.982.247-25" }'
+```
 
 ```jsonc
 // Requisição — aceita com ou sem pontuação
@@ -63,6 +79,48 @@ Gateway — é por ele que se acha a requisição no Datadog.
 
 Uso: `Authorization: Bearer <accessToken>` nas rotas protegidas.
 
+### Rotas do gateway
+
+| Rota | Destino | Authorizer |
+|---|---|---|
+| `POST /auth` | Lambda `auth` | não (é o login) |
+| `GET /health/{proxy+}` | API (NLB) | não |
+| `POST /auth/login` | API (NLB) | não |
+| `POST /auth/refresh` | API (NLB) | não |
+| `GET /publico/{proxy+}` | API (NLB) | não |
+| `GET /aprovacao/{proxy+}` | API (NLB) | não |
+| `POST /aprovacao/{proxy+}` | API (NLB) | não |
+| `$default` (todo o resto) | API (NLB) | **sim** |
+
+As rotas da API (todas, menos `POST /auth`) só são criadas quando a variável
+`api_nlb_hostname` está preenchida — ver [Deploy](#deploy). Rota explícita tem
+precedência sobre `$default`; as seis públicas existem para que o funcionário
+consiga se logar e para que os links de aprovação enviados por e-mail ao
+cliente, que a API expõe sem JWT, não levem 401 no gateway.
+
+### Authorizer
+
+REQUEST, payload format 2.0, resposta simples, resultado em cache por 300 s
+(por valor do header `Authorization`). Verifica o token em HS256 com a mesma
+`JWT_ACCESS_SECRET`, e **aceita os dois formatos de token do sistema**:
+
+| Emissor | Payload | `context.tipo` |
+|---|---|---|
+| `POST /auth` (este repo) | `{ sub: <uuid>, nome, email, tipo: "CLIENTE" }` | `CLIENTE` |
+| `POST /auth/login` (API) | `{ sub: <number>, email, roles }` — sem `iss`, `aud` nem `tipo` | `FUNCIONARIO` |
+
+Exigir `tipo: "CLIENTE"` barraria todo funcionário no gateway. Um `tipo`
+diferente de `CLIENTE` é recusado. O `context` devolvido tem `sub` (sempre
+string), `tipo` e, quando existe no token, `email`.
+
+Qualquer falha (header ausente, sem `Bearer`, assinatura errada, expirado,
+`alg: none`, segredo indisponível) devolve só `{ isAuthorized: false }`: o
+motivo vai para o log, nunca para a resposta, e o token nunca é logado.
+
+O gateway não repassa o `context` do authorizer para um destino `HTTP_PROXY`
+sozinho (isso exigiria mapeamento de parâmetros na integração); a API segue
+validando o JWT por conta própria.
+
 ## Arquitetura deste repositório
 
 ```
@@ -70,24 +128,24 @@ Uso: `Authorization: Bearer <accessToken>` nas rotas protegidas.
       │ POST /auth { cpf }
       ▼
    API Gateway ──────────────► Lambda auth  (subnets privadas)
-                                   │  │
-                 lê o segredo      │  │  consulta o cliente
-                 (Secrets Manager) │  │  (5432, SG dedicado)
-                                   ▼  ▼
-                        Secrets Manager   RDS PostgreSQL
-                        JWT_ACCESS_SECRET   tabela cliente
-                        DATABASE_URL
-      ▲
-      │ Authorization: Bearer <jwt>   (mesma JWT_ACCESS_SECRET)
-   app-oficina no EKS
+      │  │                         │  │
+      │  │ valida o JWT            │  │  consulta o cliente
+      │  ▼ (rotas protegidas)      │  │  (5432, SG dedicado)
+      │ Lambda authorizer          ▼  ▼
+      │  (fora da VPC)    Secrets Manager   RDS PostgreSQL
+      │        └────────► JWT_ACCESS_SECRET   tabela cliente
+      │                   DATABASE_URL
+      │ demais rotas, HTTP direto ao NLB
+      ▼
+   app-oficina no EKS   (valida o JWT de novo, mesma JWT_ACCESS_SECRET)
 ```
 
 ## Execução local
 
 ```bash
 npm ci
-npm test              # 20 testes, sem precisar de AWS
-npm run bundle        # gera dist/handler.js (~143 KB)
+npm test              # sem precisar de AWS
+npm run bundle        # gera dist/handler.js (~143 KB) e dist/authorizer.js (~58 KB)
 ```
 
 Os testes mockam o banco e o Secrets Manager — rodam offline. O teste central
@@ -105,7 +163,18 @@ terraform init
 terraform apply
 ```
 
-O Terraform empacota `../dist` num zip e publica a função. Nenhuma credencial
+O Terraform empacota `../dist` (um zip por função) e publica as duas funções
+e o API Gateway. De início só `POST /auth` existe. Para expor a API, depois de
+o Service `api` do `app-oficina` criar o NLB:
+
+```bash
+NLB=$(kubectl get svc api -n tech-challenge \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+terraform apply -var "api_nlb_hostname=$NLB"   # e -var api_nlb_port=<porta do Service>
+```
+
+Com `api_nlb_hostname` vazio (o default) nenhuma rota da API é criada, o que
+deixa o gateway aplicável antes de o cluster existir. Nenhuma credencial
 é passada por variável de ambiente — só o **nome** do segredo; o conteúdo é
 lido em runtime.
 
@@ -162,13 +231,17 @@ também nunca são logados.
 
 ## Pendências conhecidas
 
-- **Rota no API Gateway.** O Gateway em si ainda não está provisionado. A
-  função já exporta `lambda_invoke_arn`, que é o valor que a integração da
-  rota `POST /auth` consome. Ver o plano de entrega.
-- **Contrato do payload.** A API hoje tipa `JwtPayload.sub` como `number` (id
-  de `usuario`) e espera `roles`; este token autentica um *cliente*, cujo id é
-  UUID, e manda `tipo`. A assinatura confere — o contrato do payload precisa
-  ser alinhado dos dois lados.
+- **NLB exposto fora do gateway.** O NLB do `app-oficina` é `internet-facing`,
+  então a integração é HTTP direta, sem VPC Link, e quem conhecer o hostname do
+  NLB contorna o authorizer. Fechar isso (NLB interno + VPC Link) é o passo
+  seguinte e depende do `infra-k8s`.
+- **Contexto do authorizer não chega à API.** Em integração `HTTP_PROXY` o
+  `context` não é repassado sem mapeamento de parâmetros; hoje a API revalida o
+  JWT sozinha.
+- **Contrato do payload do cliente.** A API tipa `JwtPayload.sub` como `number`
+  (id de `usuario`) e espera `roles`; o token de cliente tem `sub` UUID e
+  `tipo`. O gateway aceita os dois formatos, mas o guard da API ainda precisa
+  ser alinhado para aceitar o token de cliente.
 
 ## Repositórios da entrega
 
