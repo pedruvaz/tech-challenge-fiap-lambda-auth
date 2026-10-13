@@ -45,6 +45,19 @@ async function obterPool(): Promise<Pool> {
  *
  * A consulta é parametrizada — o CPF vem do corpo da requisição e é entrada
  * não confiável, ainda que já validada pelo dígito verificador.
+ *
+ * O `regexp_replace` no lado da coluna não é enfeite: a aplicação grava
+ * `num_documento` **com pontuação** (`123.456.789-09`, como no seed), e o
+ * parâmetro chega aqui só com dígitos. Comparar os dois diretamente não casa
+ * nunca, e o sintoma seria o pior possível — 401 para todo cliente válido,
+ * sem erro nenhum no log. Normalizando os dois lados, a busca funciona com
+ * qualquer um dos formatos que existam na tabela.
+ *
+ * O custo é não usar o índice único de `num_documento`: a comparação vira
+ * expressão e o Postgres faz seq scan. Para o volume de clientes de uma
+ * oficina é irrelevante; se um dia incomodar, a saída é um índice funcional
+ * sobre `regexp_replace(num_documento, '\D', '', 'g')` ou normalizar o dado
+ * na escrita — as duas coisas fora do escopo desta função.
  */
 export async function buscarClienteAtivoPorCpf(
   cpf: string,
@@ -59,7 +72,7 @@ export async function buscarClienteAtivoPorCpf(
   }>(
     `SELECT cliente_id, nome, email, num_documento
        FROM cliente
-      WHERE num_documento = $1
+      WHERE regexp_replace(num_documento, '\\D', '', 'g') = $1
         AND deletado_em IS NULL
       LIMIT 1`,
     [cpf],

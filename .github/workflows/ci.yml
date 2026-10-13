@@ -34,6 +34,28 @@ jobs:
   test:
     name: Typecheck, lint e testes
     runs-on: ubuntu-latest
+
+    # Postgres para o teste de integração. Sem ele os casos que batem no banco
+    # são pulados, e foi justamente um deles que pegou o bug do CPF com
+    # pontuação — que nenhum teste com mock encontraria.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: oficina
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d oficina"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/oficina
+
     steps:
       - uses: actions/checkout@v4
 
@@ -43,6 +65,9 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      - name: Prepara o schema do teste de integração
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f test/fixtures/schema.sql
 
       - name: Formatação
         run: npm run format:check
