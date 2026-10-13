@@ -1,0 +1,125 @@
+# CI/CD da função de autenticação.
+#
+#   pull request -> typecheck, testes, bundle e `terraform plan`
+#   push em main -> bundle e `terraform apply` (cria/atualiza a função)
+#
+# Depende do `infra-k8s` e do `infra-db` já aplicados: o Terraform daqui lê o
+# state dos dois.
+#
+# Pré-requisitos:
+#   Secret  AWS_TERRAFORM_ROLE_ARN   output `github_terraform_role_arn` do infra-k8s
+#   Var     AWS_REGION               ex.: us-east-1
+name: CI
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main, dev]
+  workflow_dispatch:
+
+concurrency:
+  group: lambda-auth-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_VERSION: '1.13.3'
+  TF_IN_AUTOMATION: 'true'
+
+jobs:
+  test:
+    name: Typecheck, lint e testes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Formatação
+        run: npm run format:check
+
+      - name: Typecheck
+        run: npx tsc -p tsconfig.json --noEmit
+
+      - name: Testes
+        run: npm run test:cov
+
+      - name: Bundle
+        run: npm run bundle
+
+      # O artefato é o mesmo que o apply vai publicar: build uma vez, usa nos
+      # dois jobs. Evita o clássico "passou no CI e subiu outra coisa".
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lambda-bundle
+          path: dist/
+          retention-days: 5
+
+  terraform:
+    name: ${{ github.event_name == 'push' && github.ref_name == 'main' && 'Apply' || 'Plan' }}
+    needs: test
+    runs-on: ubuntu-latest
+    # Só mexe na AWS a partir do repositório original (não de um fork) e
+    # quando há credencial configurada.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    environment: ${{ github.ref_name == 'main' && 'prod' || '' }}
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      # O Terraform empacota `../dist` — sem o artefato, o archive_file falha.
+      - uses: actions/download-artifact@v4
+        with:
+          name: lambda-bundle
+          path: dist/
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init
+        run: terraform init -input=false
+
+      - name: Terraform validate
+        run: terraform validate -no-color
+
+      # continue-on-error: antes do primeiro apply das stacks de infra, não há
+      # state para ler e o plan falha. Esperado, não reprova o PR.
+      - name: Terraform plan
+        if: github.ref_name != 'main' || github.event_name == 'pull_request'
+        continue-on-error: true
+        run: terraform plan -no-color -input=false -lock-timeout=5m
+
+      - name: Terraform apply
+        if: github.event_name != 'pull_request' && github.ref_name == 'main'
+        run: terraform apply -auto-approve -input=false -lock-timeout=5m
+
+      - name: Resumo
+        if: github.event_name != 'pull_request' && github.ref_name == 'main'
+        run: |
+          {
+            echo "### Lambda publicada"
+            echo '```'
+            terraform output -raw lambda_function_name
+            echo
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

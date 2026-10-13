@@ -1,0 +1,17 @@
+node_modules/
+dist/
+coverage/
+
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+.build/
+*.tfvars
+!*.tfvars.example
+
+.DS_Store
+.idea/
+.vscode/
