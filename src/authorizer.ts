@@ -52,6 +52,16 @@ function extrairToken(evento: APIGatewayRequestAuthorizerEventV2): string {
 }
 
 /**
+ * Valores do enum `Roles` do Prisma do `app-oficina`.
+ *
+ * Apesar do nome no plural, `roles` no token de funcionário é **um único
+ * valor** (`roles: 'mecanico'`), não uma lista: o `Usuario` tem uma coluna
+ * `roles Roles` e o `JwtPayload` da API repete esse tipo. Exigir array aqui
+ * barraria todo funcionário no gateway.
+ */
+const ROLES_FUNCIONARIO = ['admin', 'funcionario', 'mecanico'] as const;
+
+/**
  * Converte o payload verificado no contexto repassado à API.
  *
  * Esta função é a decisão central do authorizer: **ele aceita os dois
@@ -60,7 +70,8 @@ function extrairToken(evento: APIGatewayRequestAuthorizerEventV2): string {
  *   - cliente, emitido pela função `POST /auth` deste repositório:
  *       `{ sub: <uuid>, nome, email, tipo: 'CLIENTE' }`
  *   - funcionário, emitido pelo `POST /auth/login` da API desde a Fase 1:
- *       `{ sub: <number>, email, roles }` — sem `iss`, `aud` nem `tipo`.
+ *       `{ sub: <number>, email, roles: 'admin' | 'funcionario' | 'mecanico' }`
+ *       — sem `iss`, `aud` nem `tipo`.
  *
  * Se o authorizer exigisse `tipo: 'CLIENTE'`, todo funcionário seria barrado
  * no gateway antes de chegar à API, e nem o login de funcionário (que devolve
@@ -71,7 +82,7 @@ function extrairToken(evento: APIGatewayRequestAuthorizerEventV2): string {
 function montarContexto(payload: string | jwt.JwtPayload): ContextoAutorizado {
   if (typeof payload === 'string') throw new Error('Payload do token inválido');
 
-  const { sub, tipo, email } = payload;
+  const { sub, tipo, email, nome, roles } = payload;
 
   const subValido =
     (typeof sub === 'string' && sub !== '') ||
@@ -80,6 +91,20 @@ function montarContexto(payload: string | jwt.JwtPayload): ContextoAutorizado {
 
   if (tipo !== undefined && tipo !== 'CLIENTE') {
     throw new Error('Token com tipo desconhecido');
+  }
+
+  // Valida a estrutura esperada para cada tipo de token, não só a assinatura.
+  // Impede que um token com payload mínimo escale privilégio indevidamente.
+  if (tipo === 'CLIENTE') {
+    if (typeof nome !== 'string' || nome.trim() === '') {
+      throw new Error('Token de cliente sem nome');
+    }
+  } else {
+    // Tokens de funcionário não carregam `tipo`; o contrato exige `roles`
+    // com um dos valores do enum da API.
+    if (!ROLES_FUNCIONARIO.includes(roles)) {
+      throw new Error('Token de funcionário sem roles válido');
+    }
   }
 
   const contexto: ContextoAutorizado = {
