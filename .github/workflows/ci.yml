@@ -72,6 +72,9 @@ jobs:
       - name: Formatação
         run: npm run format:check
 
+      - name: Lint
+        run: npm run lint
+
       - name: Typecheck
         run: npx tsc -p tsconfig.json --noEmit
 
