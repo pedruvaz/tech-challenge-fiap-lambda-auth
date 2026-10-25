@@ -29,6 +29,13 @@ Node.js 20 · TypeScript · `jsonwebtoken` · `pg` · AWS SDK v3 ·
 esbuild (bundle) · Jest · Terraform · API Gateway HTTP API · GitHub Actions
 com OIDC.
 
+## Coleção Postman / OpenAPI
+
+A coleção Postman com os exemplos de autenticação e uso das APIs protegidas
+está disponível no repositório `app-oficina`:
+[`app-oficina/docs/postman_collection.json`](https://github.com/pedruvaz/tech-challenge-fiap-app-oficina)
+<!-- Substituir pelo link direto ao arquivo quando disponível -->
+
 ## Contrato da API
 
 ### `POST /auth`
@@ -104,18 +111,30 @@ REQUEST, payload format 2.0, resposta simples, resultado em cache por 300 s
 (por valor do header `Authorization`). Verifica o token em HS256 com a mesma
 `JWT_ACCESS_SECRET`, e **aceita os dois formatos de token do sistema**:
 
-| Emissor | Payload | `context.tipo` |
+| Emissor | Payload obrigatório | `context.tipo` |
 |---|---|---|
 | `POST /auth` (este repo) | `{ sub: <uuid>, nome, email, tipo: "CLIENTE" }` | `CLIENTE` |
-| `POST /auth/login` (API) | `{ sub: <number>, email, roles }` — sem `iss`, `aud` nem `tipo` | `FUNCIONARIO` |
+| `POST /auth/login` (API) | `{ sub: <number>, email, roles: "admin" \| "funcionario" \| "mecanico" }` — sem `iss`, `aud` nem `tipo` | `FUNCIONARIO` |
 
-Exigir `tipo: "CLIENTE"` barraria todo funcionário no gateway. Um `tipo`
-diferente de `CLIENTE` é recusado. O `context` devolvido tem `sub` (sempre
-string), `tipo` e, quando existe no token, `email`.
+O authorizer valida **assinatura e estrutura do payload**:
+
+- Token de cliente (`tipo: "CLIENTE"`) — exige campo `nome` preenchido.
+- Token de funcionário (sem `tipo`) — exige `roles` com um dos valores do enum
+  `Roles` do `app-oficina` (`admin`, `funcionario` ou `mecanico`). É **um
+  valor só**, não uma lista, apesar do nome.
+- Qualquer `tipo` diferente de `"CLIENTE"` é recusado imediatamente.
+
+Isso impede que um token com payload mínimo (`{ sub }` apenas) consiga acesso
+ao `$default` se passando por funcionário — a estrutura errada rejeita antes de
+propagar o contexto.
+
+O `context` devolvido tem `sub` (sempre string), `tipo` e, quando presente no
+token, `email`.
 
 Qualquer falha (header ausente, sem `Bearer`, assinatura errada, expirado,
-`alg: none`, segredo indisponível) devolve só `{ isAuthorized: false }`: o
-motivo vai para o log, nunca para a resposta, e o token nunca é logado.
+`alg: none`, segredo indisponível, payload fora do contrato) devolve só
+`{ isAuthorized: false }`: o motivo vai para o log, nunca para a resposta, e o
+token nunca é logado.
 
 O gateway não repassa o `context` do authorizer para um destino `HTTP_PROXY`
 sozinho (isso exigiria mapeamento de parâmetros na integração); a API segue
@@ -238,10 +257,10 @@ também nunca são logados.
 - **Contexto do authorizer não chega à API.** Em integração `HTTP_PROXY` o
   `context` não é repassado sem mapeamento de parâmetros; hoje a API revalida o
   JWT sozinha.
-- **Contrato do payload do cliente.** A API tipa `JwtPayload.sub` como `number`
-  (id de `usuario`) e espera `roles`; o token de cliente tem `sub` UUID e
-  `tipo`. O gateway aceita os dois formatos, mas o guard da API ainda precisa
-  ser alinhado para aceitar o token de cliente.
+- **Guard da API precisa usar `tipo`.** O authorizer passa `tipo: "CLIENTE"` no
+  context e a validação de payload está feita neste repo. O `app-oficina` ainda
+  precisa ler o `tipo` do context (ou do token revalidado) para restringir
+  clientes a acessar apenas os próprios recursos.
 
 ## Repositórios da entrega
 

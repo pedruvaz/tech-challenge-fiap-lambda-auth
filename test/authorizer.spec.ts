@@ -77,9 +77,9 @@ describe('authorizer do API Gateway', () => {
   });
 
   it('autoriza token de funcionário, sem iss, aud nem tipo', async () => {
-    // Formato do POST /auth/login da API: sub numérico e roles.
+    // Formato do POST /auth/login da API: sub numérico e um único papel.
     const token = jwt.sign(
-      { sub: 42, email: 'mecanico@oficina.com', roles: ['MECANICO'] },
+      { sub: 42, email: 'mecanico@oficina.com', roles: 'mecanico' },
       SEGREDO_JWT,
       { algorithm: 'HS256', expiresIn: '15m' },
     );
@@ -97,7 +97,9 @@ describe('authorizer do API Gateway', () => {
   });
 
   it('omite o email do contexto quando o token não traz', async () => {
-    const token = jwt.sign({ sub: 7 }, SEGREDO_JWT, { algorithm: 'HS256' });
+    const token = jwt.sign({ sub: 7, roles: 'mecanico' }, SEGREDO_JWT, {
+      algorithm: 'HS256',
+    });
 
     const resultado = await handler(comBearer(token), contexto);
 
@@ -204,6 +206,66 @@ describe('authorizer do API Gateway', () => {
   it('recusa (fail closed) quando o segredo não carrega', async () => {
     segredoMock.mockRejectedValue(new Error('timeout no Secrets Manager'));
     const token = jwt.sign({ sub: 1 }, SEGREDO_JWT, { algorithm: 'HS256' });
+
+    const resultado = await handler(comBearer(token), contexto);
+
+    expect(resultado).toEqual({ isAuthorized: false });
+  });
+
+  it('recusa token de cliente sem o campo nome', async () => {
+    // PayloadToken exige `nome`; sem ele o token não é um token de cliente legítimo.
+    const token = jwt.sign(
+      {
+        sub: '6f1c2a3e-0000-4000-8000-000000000001',
+        tipo: 'CLIENTE',
+        email: 'a@b.com',
+      },
+      SEGREDO_JWT,
+      { algorithm: 'HS256' },
+    );
+
+    const resultado = await handler(comBearer(token), contexto);
+
+    expect(resultado).toEqual({ isAuthorized: false });
+  });
+
+  it('recusa token sem tipo e sem roles — impede escalada de privilégio', async () => {
+    // Um token com apenas `sub` e sem `tipo` nem `roles` não satisfaz o contrato
+    // de nenhum dos dois papéis: seria tratado como FUNCIONARIO mas sem roles.
+    const token = jwt.sign({ sub: 1 }, SEGREDO_JWT, { algorithm: 'HS256' });
+
+    const resultado = await handler(comBearer(token), contexto);
+
+    expect(resultado).toEqual({ isAuthorized: false });
+  });
+
+  it.each(['admin', 'funcionario', 'mecanico'])(
+    'autoriza funcionário com roles %s, valor do enum da API',
+    async (papel) => {
+      const token = jwt.sign({ sub: 3, roles: papel }, SEGREDO_JWT, {
+        algorithm: 'HS256',
+      });
+
+      const resultado = await handler(comBearer(token), contexto);
+
+      expect(resultado).toEqual({
+        isAuthorized: true,
+        context: { sub: '3', tipo: 'FUNCIONARIO' },
+      });
+    },
+  );
+
+  it.each([
+    ['fora do enum', 'superusuario'],
+    ['em maiúsculo', 'ADMIN'],
+    ['vazio', ''],
+    ['como lista', ['mecanico']],
+  ])('recusa funcionário com roles %s', async (_caso, roles) => {
+    // A API emite um único valor do enum `Roles`; qualquer outra forma não é
+    // um token que ela tenha assinado.
+    const token = jwt.sign({ sub: 3, roles }, SEGREDO_JWT, {
+      algorithm: 'HS256',
+    });
 
     const resultado = await handler(comBearer(token), contexto);
 

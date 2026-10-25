@@ -48,6 +48,13 @@ beforeEach(() => {
     DATABASE_URL: 'postgresql://localhost:5432/oficina',
     JWT_ACCESS_SECRET: SEGREDO_JWT,
   });
+  jest.spyOn(console, 'log').mockImplementation(() => undefined);
+  jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+  jest.spyOn(console, 'error').mockImplementation(() => undefined);
+});
+
+afterEach(() => {
+  jest.restoreAllMocks();
 });
 
 describe('handler de autenticação', () => {
