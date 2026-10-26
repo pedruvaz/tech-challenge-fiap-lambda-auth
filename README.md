@@ -192,6 +192,11 @@ NLB=$(kubectl get svc api -n tech-challenge \
 terraform apply -var "api_nlb_hostname=$NLB"   # e -var api_nlb_port=<porta do Service>
 ```
 
+Pelo CI, o mesmo valor entra pela variable `API_NLB_HOSTNAME` do repositório
+(`gh variable set API_NLB_HOSTNAME --body "$NLB"`): o job de Terraform a passa
+como `TF_VAR_api_nlb_hostname`. Depois de criar ou alterar a variable, dispare
+o workflow na `main` (workflow_dispatch) ou dê um push — o apply só roda na `main`.
+
 Com `api_nlb_hostname` vazio (o default) nenhuma rota da API é criada, o que
 deixa o gateway aplicável antes de o cluster existir. Nenhuma credencial
 é passada por variável de ambiente — só o **nome** do segredo; o conteúdo é
@@ -208,7 +213,8 @@ O bundle testado é o mesmo publicado: ele sobe como artefato no job de teste e
 é baixado pelo job de deploy, em vez de ser reconstruído. Evita o clássico
 "passou no CI e subiu outra coisa".
 
-Configure: secret `AWS_TERRAFORM_ROLE_ARN`, variable `AWS_REGION`.
+Configure: secret `AWS_TERRAFORM_ROLE_ARN`, variables `AWS_REGION` e, quando o NLB
+existir, `API_NLB_HOSTNAME` (ver [Deploy](#deploy)).
 A branch `main` é protegida: merge só via Pull Request.
 
 ## Decisões que vale conhecer
