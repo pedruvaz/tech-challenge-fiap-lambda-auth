@@ -4,10 +4,14 @@
 # group do `infra-db`. Não cria SG próprio — ver o comentário em
 # `infra-db/terraform/rds.tf` sobre a dependência circular que isso evitaria.
 
+# `dist/` agora carrega os dois bundles (handler e authorizer). Cada função
+# empacota só o seu: sem o `excludes`, uma mudança no authorizer mudaria o hash
+# desta zip e republicaria a função de login à toa.
 data "archive_file" "handler" {
   type        = "zip"
   source_dir  = "${path.module}/../dist"
   output_path = "${path.module}/.build/handler.zip"
+  excludes    = ["authorizer.js", "authorizer.js.map"]
 }
 
 resource "aws_iam_role" "lambda" {

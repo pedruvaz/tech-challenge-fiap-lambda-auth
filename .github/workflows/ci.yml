@@ -72,6 +72,9 @@ jobs:
       - name: Formatação
         run: npm run format:check
 
+      - name: Lint
+        run: npm run lint
+
       - name: Typecheck
         run: npx tsc -p tsconfig.json --noEmit
 
@@ -97,6 +100,13 @@ jobs:
     # quando há credencial configurada.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     environment: ${{ github.ref_name == 'main' && 'prod' || '' }}
+    # Hostname do NLB que o Service `api` do app-oficina cria no EKS. Vazio (var
+    # não criada) -> só a rota POST /auth existe; preenchido -> o gateway ganha as
+    # rotas da API. É variable, não secret: hostname público, sem credencial.
+    # Depois de criar/alterar a variable, rodar o workflow na main por
+    # workflow_dispatch (ou dar push) para o apply pegar o valor novo.
+    env:
+      TF_VAR_api_nlb_hostname: ${{ vars.API_NLB_HOSTNAME }}
     defaults:
       run:
         working-directory: terraform

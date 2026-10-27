@@ -12,20 +12,26 @@ import { mkdir, rm } from 'node:fs/promises';
 await rm('dist', { recursive: true, force: true });
 await mkdir('dist', { recursive: true });
 
-await build({
-  entryPoints: ['src/handler.ts'],
-  bundle: true,
-  platform: 'node',
-  target: 'node20',
-  format: 'cjs',
-  outfile: 'dist/handler.js',
-  sourcemap: true,
-  minify: true,
-  external: ['@aws-sdk/*'],
-  // `pg` carrega o driver nativo `pg-native` se ele existir; não usamos e
-  // sem isto o esbuild falharia ao resolver o módulo opcional.
-  alias: { 'pg-native': './scripts/pg-native-stub.cjs' },
-  logLevel: 'info',
-});
+// Um bundle por função: o authorizer não importa `pg`, então o dele sai bem
+// menor e esquenta mais rápido — ele roda em toda requisição protegida.
+const funcoes = ['handler', 'authorizer'];
 
-console.log('Bundle gerado em dist/handler.js');
+for (const nome of funcoes) {
+  await build({
+    entryPoints: [`src/${nome}.ts`],
+    bundle: true,
+    platform: 'node',
+    target: 'node20',
+    format: 'cjs',
+    outfile: `dist/${nome}.js`,
+    sourcemap: true,
+    minify: true,
+    external: ['@aws-sdk/*'],
+    // `pg` carrega o driver nativo `pg-native` se ele existir; não usamos e
+    // sem isto o esbuild falharia ao resolver o módulo opcional.
+    alias: { 'pg-native': './scripts/pg-native-stub.cjs' },
+    logLevel: 'info',
+  });
+
+  console.log(`Bundle gerado em dist/${nome}.js`);
+}
