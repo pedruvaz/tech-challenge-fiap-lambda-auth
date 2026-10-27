@@ -187,3 +187,25 @@ resource "aws_apigatewayv2_route" "api_protegida" {
   authorization_type = "CUSTOM"
   authorizer_id      = aws_apigatewayv2_authorizer.jwt.id
 }
+
+# --- Preflight CORS -------------------------------------------------------------
+#
+# Antes de qualquer chamada com JSON ou header `Authorization`, o navegador manda
+# um `OPTIONS` sem credencial. Sem rota própria, esse `OPTIONS` cai no `$default`,
+# o authorizer recusa e o gateway devolve 401 — até com os headers de CORS do
+# `cors_configuration`, mas o navegador exige 2xx no preflight, então um
+# front-end não consegue falar com o gateway de jeito nenhum (inclusive para as
+# rotas públicas: `OPTIONS /auth/login` também cai no `$default`).
+#
+# Rota explícita, sem authorizer, reusando a integração do `$default`: a API
+# responde 204 ao `OPTIONS` e o gateway substitui os headers de CORS dela pelos
+# do `cors_configuration` (com CORS configurado, o API Gateway ignora os headers
+# de CORS do backend). Curl, Postman e Swagger nunca fizeram preflight, por isso
+# o problema só aparece no navegador.
+resource "aws_apigatewayv2_route" "preflight" {
+  count = local.expor_api ? 1 : 0
+
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "OPTIONS /{proxy+}"
+  target    = "integrations/${aws_apigatewayv2_integration.api_protegida[0].id}"
+}
